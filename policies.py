@@ -346,6 +346,58 @@ def proposed9(env):
 
 	return push_pts
 
+def proposed9_refined(env):
+	cluster_lst = find_dist_cluster(env)
+	push_obj = cluster_lst[0][0]
+	push_pts = None
+
+	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and len(cluster_lst) != 1 and (not (len(cluster_lst) == 2 and len(cluster_lst[0]) == 2)):
+		# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i not in cluster_lst[0]]))
+		dist = 1e2
+		
+		for obj in range(len(env.objs)):
+			if obj != push_obj:
+				max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i != push_obj]))
+				vector = normalize(env.objs[obj].original_pos - env.objs[push_obj].original_pos)
+				if euclidean_dist(vector, max_away) < dist:
+					dist = euclidean_dist(vector, max_away)
+					push_pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
+	else:
+		push_pts = proposed8(env)
+
+	return push_pts
+
+def proposed9_refined2(env):
+	cluster_lst = find_dist_cluster(env)
+	push_obj = cluster_lst[0][0]
+	push_pts = None
+
+	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and len(cluster_lst) != 1 and (not (len(cluster_lst) == 2 and len(cluster_lst[0]) == 2)):
+		# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i not in cluster_lst[0]]))
+		max_dist_sum = 0
+		
+		for obj in range(len(env.objs)):
+			if obj != push_obj:
+				# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i != push_obj]))
+				vector = normalize(env.objs[obj].original_pos - env.objs[push_obj].original_pos)
+				pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
+				min_dist_l = 1e2
+				min_dist_r = 1e2
+				for k in range(len(env.objs)):
+					if k != push_obj and k != obj and scalarProject(pts[0], pts[1], env.objs[k].original_pos) > 0:
+						side_com = side_of_point_on_line(pts[0], pts[1], env.objs[k].original_pos)
+						if side_com < 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_l:
+							min_dist_l = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
+						if side_com > 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_r:
+							min_dist_r = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
+				if min_dist_l + min_dist_r > max_dist_sum:
+					max_dist_sum = min_dist_l + min_dist_r
+					push_pts = pts
+	else:
+		push_pts = proposed8(env)
+
+	return push_pts
+
 def boundaryShear(env):
 	max_free_space = 0
 	obj = None
