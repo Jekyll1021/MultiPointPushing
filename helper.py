@@ -275,3 +275,4 @@ def findLoads(vertices, start_pt, end_pt):
 	v = compute_centroid(vertices)
 	return euclidean_dist(compute_centroid(left), v), euclidean_dist(compute_centroid(right), v)
 
+

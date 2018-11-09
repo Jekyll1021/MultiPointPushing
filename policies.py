@@ -17,14 +17,14 @@ def find_best_remove_object(env, removal_lst=[]):
 			for i in range(len(env.objs) - 1):
 				for j in range(i + 1, len(env.objs)):
 					if i != obj and j != obj:
-						dist_sum += math.log(euclidean_dist(env.objs[i].original_pos, env.objs[j].original_pos))
+						dist_sum += math.log(euclidean_dist(np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]), env.objs[j].original_pos))
 			if dist_sum > max_dist_sum:
 				push_obj = obj
 				max_dist_sum = dist_sum
 
 	return push_obj
 
-def find_dist_cluster(env, max_dist=2.2):
+def find_dist_center_obj_cluster(env, max_dist=2.3):
 	center_obj = -1
 	dist = 1e2
 	for i in range(len(env.objs)):
@@ -61,6 +61,44 @@ def find_dist_cluster(env, max_dist=2.2):
 
 	return cluster_lst
 
+def find_dist_cluster(env, max_dist=2.3):
+	candidate_pair = find_closest_pair(env, [])
+	center_obj = -1
+	dist = 1e2
+	for i in candidate_pair:
+		if euclidean_dist(env.centroid, np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]])) < dist:
+			dist = euclidean_dist(env.centroid, np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]))
+			center_obj = i
+
+	cluster_lst = []
+	cluster = [center_obj]
+	leftoff = []
+	for i in range(len(env.objs)):
+		if (i != center_obj) and euclidean_dist(np.array([env.objs[center_obj].body.position[0], env.objs[center_obj].body.position[1]]), np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]])) < max_dist:
+			cluster.append(i)
+		elif (i != center_obj):
+			leftoff.append(i)
+	cluster_lst.append(cluster)
+	
+	cluster = []
+	
+	while leftoff != []:
+		center_obj = leftoff[0]
+		
+		cluster = [center_obj]
+
+		new_leftoff = []
+		for obj in leftoff:
+			if (obj != center_obj) and euclidean_dist(np.array([env.objs[center_obj].body.position[0], env.objs[center_obj].body.position[1]]), np.array([env.objs[obj].body.position[0], env.objs[obj].body.position[1]])) < max_dist:
+				cluster.append(obj)
+			elif (obj != center_obj):
+				new_leftoff.append(obj)
+		cluster_lst.append(cluster)
+		cluster = []
+		leftoff = new_leftoff
+
+	return cluster_lst
+
 def find_closest_pair(env, removal_lst):
 	# list can be empty
 	min_dist = 100
@@ -68,8 +106,8 @@ def find_closest_pair(env, removal_lst):
 	for i in range(len(env.objs) - 1):
 		for j in range(i + 1, len(env.objs)):
 			if (not i in removal_lst) and (not j in removal_lst):
-				if euclidean_dist(env.objs[i].original_pos, env.objs[j].original_pos) < min_dist:
-					min_dist = euclidean_dist(env.objs[i].original_pos, env.objs[j].original_pos)
+				if euclidean_dist(np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]), np.array([env.objs[j].body.position[0], env.objs[j].body.position[1]])) < min_dist:
+					min_dist = euclidean_dist(np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]), np.array([env.objs[j].body.position[0], env.objs[j].body.position[1]]))
 					pair = [i, j]
 	return pair
 
@@ -77,7 +115,7 @@ def find_closest_ranking_to_object(env, obj):
 	dic = {}
 	for i in range(len(env.objs)):
 		if i != obj:
-			dic[i] = euclidean_dist(env.objs[i].original_pos, env.objs[obj].original_pos)
+			dic[i] = euclidean_dist(np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]), env.objs[obj].original_pos)
 	return [k for k in sorted(dic, key=dic.get)]
 
 def find_clusters(env, cluster_num, first_obj=-1):
@@ -210,7 +248,7 @@ def proposed3(env):
 		if max_dist_l + max_dist_r <= min_dist_sum:
 			min_dist_sum = max_dist_l + max_dist_r
 			push_pts = pts
-	max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i != push_obj]))
+	max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs)) if i != push_obj]))
 	vector = normalize(np.array(pts[1]) - np.array(pts[0]))
 	# print(min_dist_sum, euclidean_dist(vector, max_away))
 	return push_pts
@@ -327,12 +365,12 @@ def proposed8(env):
 	return push_pts
 
 def proposed9(env):
-	cluster_lst = find_dist_cluster(env)
+	cluster_lst = find_dist_center_obj_cluster(env)
 	push_obj = cluster_lst[0][0]
 	push_pts = None
 
 	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and len(cluster_lst) != 1 and (not (len(cluster_lst) == 2 and len(cluster_lst[0]) == 2)):
-		max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i not in cluster_lst[0]]))
+		max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs)) if i not in cluster_lst[0]]))
 		dist = 1e2
 		
 		for obj in cluster_lst[0]:
@@ -346,55 +384,45 @@ def proposed9(env):
 
 	return push_pts
 
-def proposed9_refined(env):
+def proposed9_sequential(env):
 	cluster_lst = find_dist_cluster(env)
 	push_obj = cluster_lst[0][0]
 	push_pts = None
+	# print(len(cluster_lst))
 
-	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and len(cluster_lst) != 1 and (not (len(cluster_lst) == 2 and len(cluster_lst[0]) == 2)):
-		# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i not in cluster_lst[0]]))
+	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and ((len(cluster_lst[0]) > 2)):
+		if len(cluster_lst) > 1:
+			max_away = normalize(findMaxAwayVector([np.array([env.objs[push_obj].body.position[0], env.objs[push_obj].body.position[1]]) - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs)) if i not in cluster_lst[0]]))
+		else: 
+			max_away = normalize(findMaxAwayVector([np.array([env.objs[push_obj].body.position[0], env.objs[push_obj].body.position[1]]) - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs))]))
 		dist = 1e2
 		
-		for obj in range(len(env.objs)):
+		for obj in cluster_lst[0]:
 			if obj != push_obj:
-				max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i != push_obj]))
-				vector = normalize(env.objs[obj].original_pos - env.objs[push_obj].original_pos)
+				vector = normalize(np.array([env.objs[obj].body.position[0], env.objs[obj].body.position[1]]) - np.array([env.objs[push_obj].body.position[0], env.objs[push_obj].body.position[1]]))
 				if euclidean_dist(vector, max_away) < dist:
 					dist = euclidean_dist(vector, max_away)
-					push_pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
+					push_pts = parametrize_by_bounding_circle(np.array([env.objs[push_obj].body.position[0], env.objs[push_obj].body.position[1]]), vector, np.array([env.objs[push_obj].body.position[0], env.objs[push_obj].body.position[1]]), env.objs[push_obj].bounding_circle_radius+0.1)
 	else:
-		push_pts = proposed8(env)
-
-	return push_pts
-
-def proposed9_refined2(env):
-	cluster_lst = find_dist_cluster(env)
-	push_obj = cluster_lst[0][0]
-	push_pts = None
-
-	if len(cluster_lst[0]) == max([len(cluster) for cluster in cluster_lst]) and len(cluster_lst) != 1 and (not (len(cluster_lst) == 2 and len(cluster_lst[0]) == 2)):
-		# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i not in cluster_lst[0]]))
-		max_dist_sum = 0
-		
-		for obj in range(len(env.objs)):
-			if obj != push_obj:
-				# max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - env.objs[i].original_pos for i in range(len(env.objs)) if i != push_obj]))
-				vector = normalize(env.objs[obj].original_pos - env.objs[push_obj].original_pos)
-				pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
-				min_dist_l = 1e2
-				min_dist_r = 1e2
-				for k in range(len(env.objs)):
-					if k != push_obj and k != obj and scalarProject(pts[0], pts[1], env.objs[k].original_pos) > 0:
-						side_com = side_of_point_on_line(pts[0], pts[1], env.objs[k].original_pos)
-						if side_com < 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_l:
-							min_dist_l = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-						if side_com > 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_r:
-							min_dist_r = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-				if min_dist_l + min_dist_r > max_dist_sum:
-					max_dist_sum = min_dist_l + min_dist_r
-					push_pts = pts
-	else:
-		push_pts = proposed8(env)
+		cluster_to_push = cluster_lst[0]
+		for i in range(1, len(cluster_lst)):
+			if len(cluster_to_push) < len(cluster_lst[i]):
+				cluster_to_push = cluster_lst[i]
+		if len(cluster_to_push) == 1:
+			push_pts = proposed8(env)
+		else:
+			vertices_lst = []
+			for o in cluster_to_push:
+				vertices_lst.extend((env.objs[o].vertices+np.array([env.objs[o].body.position[0], env.objs[o].body.position[1]])).tolist())
+			cluster_center = compute_centroid(create_convex_hull(np.array(vertices_lst)))
+			dist = 1e2
+			push_pts = None
+			for o in cluster_to_push:
+				vector = normalize(np.array([env.objs[o].body.position[0], env.objs[o].body.position[1]]) - np.array(cluster_center))
+				away = normalize(findMaxAwayVector([np.array([env.objs[o].body.position[0], env.objs[o].body.position[1]]) - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs)) if i not in cluster_to_push]))
+				if euclidean_dist(vector, away) < dist:
+					push_pts = parametrize_by_bounding_circle(np.array([env.objs[o].body.position[0], env.objs[o].body.position[1]]), vector,np.array([env.objs[o].body.position[0], env.objs[o].body.position[1]]), env.objs[o].bounding_circle_radius+0.1)
+					dist = euclidean_dist(vector, away)
 
 	return push_pts
 
