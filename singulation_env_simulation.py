@@ -18,12 +18,13 @@ import json
 import random
 from policies import *
 from prune import *
+from behavioral_clone import *
 
 PPM = 60.0  # pixels per meter
 TIME_STEP = 0.1
 SCREEN_WIDTH, SCREEN_HEIGHT = 720, 720
 
-GROUPS = [(1, 1, 15), (0.75, 1, 12), (0.5, 1, 9), (0.25, 1, 6)]
+GROUPS = [(1, 1, 15), (0.75, 1, 12), (0.5, 1, 9), (0.25, 1, 6), (0.25, 1, 15)]
 
 
 num_classes = 8
@@ -122,7 +123,7 @@ class SingulationEnv:
 				max_iter = 1000
 				while True:
 					max_iter -= 1
-					original_pos = np.array([np.random.uniform(-(0.3*num_objs+0.5),0.3*num_objs+0.5),np.random.uniform(-(0.3*num_objs+0.5),0.3*num_objs+0.5)]) + np.array(self.objs[-1].body.position)
+					original_pos = np.array([np.random.uniform(-1.8,1.8),np.random.uniform(-1.8,1.8)]) + np.array(self.objs[-1].body.position)
 					# original_pos = np.array([np.random.uniform(1,11),np.random.uniform(1,11)])
 					no_overlap = True
 					original_pos = np.clip(original_pos, 1, 11)
@@ -620,7 +621,7 @@ class SingulationEnv:
 	def count_threshold(self, threshold=0.3):
 		count = 0
 		for i in range(len(self.objs)):
-			isolated = True
+			min_dist = 1e2
 			for j in range(len(self.objs)):
 				if i != j:
 					shape1 = self.objs[i].fixtures[0].shape
@@ -634,10 +635,35 @@ class SingulationEnv:
 					angle2 = self.objs[j].body.angle
 					transform2.Set(pos2, angle2)
 					pointA, pointB, distance, iterations = Box2D.b2Distance(shapeA=shape1, shapeB=shape2, transformA=transform1, transformB=transform2)
-					if distance < threshold:
-						isolated = False
-			if isolated:
+					if distance < min_dist:
+						min_dist = distance
+			if min_dist >= threshold:
 				count += 1
+		return count
+
+	def count_soft_threshold(self, threshold_max=0.3, threshold_min=0.1):
+		count = 0.0
+		for i in range(len(self.objs)):
+			min_dist = 1e2
+			for j in range(len(self.objs)):
+				if i != j:
+					shape1 = self.objs[i].fixtures[0].shape
+					shape2 = self.objs[j].fixtures[0].shape
+					transform1 = Box2D.b2Transform()
+					pos1 = self.objs[i].body.position
+					angle1 = self.objs[i].body.angle
+					transform1.Set(pos1, angle1)
+					transform2 = Box2D.b2Transform()
+					pos2 = self.objs[j].body.position
+					angle2 = self.objs[j].body.angle
+					transform2.Set(pos2, angle2)
+					pointA, pointB, distance, iterations = Box2D.b2Distance(shapeA=shape1, shapeB=shape2, transformA=transform1, transformB=transform2)
+					if distance < min_dist:
+						min_dist = distance
+			if min_dist >= threshold_max:
+				count += 1
+			elif min_dist > threshold_min and min_dist < threshold_max:
+				count += (min_dist-0.1) * 5				
 		return count
 
 	def collect_data_summary(self, start_pt, end_pt, img_path, sum_path=None):
@@ -660,6 +686,7 @@ class SingulationEnv:
 		summary["min centroid before push"] = self.min_centroid()
 		summary["min geometry before push"] = self.min_geometry()
 		summary["count threshold before push"] = self.count_threshold()
+		summary["count soft threshold before push"] = self.count_soft_threshold()
 
 
 		first_contact = self.step(start_pt, end_pt, img_path)
@@ -674,6 +701,7 @@ class SingulationEnv:
 		summary["min centroid after push"] = self.min_centroid()
 		summary["min geometry after push"] = self.min_geometry()
 		summary["count threshold after push"] = self.count_threshold()
+		summary["count soft threshold after push"] = self.count_soft_threshold()
 		summary["first contact object"] = first_contact
 		
 		if sum_path is not None:
@@ -852,8 +880,8 @@ class SingulationEnv:
 		# pygame.quit()
 
 	def load_env(self, dic):
-		assert (len(dic) - 13) % 6 == 0
-		num_obj = (len(dic) - 13) // 6
+		assert (len(dic) - 15) % 6 == 0
+		num_obj = (len(dic) - 15) // 6
 		for i in range(num_obj):
 			original_pos = np.array(dic[str(i)+" original pos"])
 			vertices = np.array(dic[str(i)+" vertices"])
@@ -882,46 +910,50 @@ class SingulationEnv:
 			self.objs[i].body.position[0] = position[i][0]
 			self.objs[i].body.position[1] = position[i][1]
 			self.objs[i].body.angle = position[i][2]
+			self.objs[i].body.linearVelocity[0] = 0.0
+			self.objs[i].body.linearVelocity[1] = 0.0
+			self.objs[i].body.angularVelocity = 0.0
 
-	# def sequential_planning_helper(self, prune_method, step, position, history, metric="count threshold"):
-	# 	if step == 0:
-	# 		return history[-1][metric+" after push"]-history[0][metric+" before push"], history
-	# 	else:
-	# 		pt_lst = prune_method(self)
-	# 		best_sum = None
-	# 		best_metric = 1e2
-	# 		for pts in pt_lst:
-	# 			self.load_position(position)
-	# 			curr_hist = self.collect_data_summary(pts[0], pts[1], None)
-	# 			hist_sum = copy.deepcopy(history)
-	# 			hist_sum.append(curr_hist)
-	# 			curr_pos = self.save_curr_position()
-	# 			value, total = self.sequential_planning_helper(prune_method, step-1, curr_pos, hist_sum, metric)
-	# 			if value is not None and value > best_metric:
-	# 				best_sum = total
-	# 				best_metric = total[-1][metric+" after push"]-total[0][metric+" before push"]
-	# 		if best_sum is not None:
-	# 			return best_metric, best_sum
-	# 		else:
-	# 			return None, None
+	def sequential_planning_helper(self, prune_method, step, position, history, metric="count threshold"):
+		if step == 0:
+			return history[-1][metric+" after push"]-history[0][metric+" before push"], history
+		else:
+			pt_lst = prune_method(self)
+			best_sum = None
+			best_metric = 1e2
+			for pts in pt_lst:
+				self.load_position(position)
+				curr_hist = self.collect_data_summary(pts[0], pts[1], None)
+				hist_sum = copy.deepcopy(history)
+				hist_sum.append(curr_hist)
+				curr_pos = self.save_curr_position()
+				value, total = self.sequential_planning_helper(prune_method, step-1, curr_pos, hist_sum, metric)
+				if value is not None and value > best_metric:
+					best_sum = total
+					best_metric = total[-1][metric+" after push"]-total[0][metric+" before push"]
+			if best_sum is not None:
+				print(best_sum[-1][metric +" after push"], best_sum[-1][metric + " before push"])
+				return best_metric, best_sum
+			else:
+				return None, None
 
-	# def sequential_prune_planning(self, prune_method, max_step=10, metric="count threshold", sum_path=None):
-	# 	curr_pos = self.save_curr_position()
-	# 	best_metric, best_sum = self.sequential_planning_helper(prune_method, max_step, curr_pos, [], metric=metric)
+	def sequential_tree_prune_planning(self, prune_method, max_step=10, metric="count threshold", sum_path=None):
+		curr_pos = self.save_curr_position()
+		best_metric, best_sum = self.sequential_planning_helper(prune_method, max_step, curr_pos, [], metric=metric)
 
-	# 	# for i in range(max_step):
-	# 	# 	curr_pos = self.save_curr_position()
-	# 	# 	best_pts = self.prune_best(prune_method, metric, curr_pos)
-	# 	# 	self.load_position(curr_pos)
-	# 	# 	curr_sum = self.collect_data_summary(best_pts[0], best_pts[1], None)
-	# 	# 	data_sum.append(curr_sum)
-	# 	# 	print(curr_sum[metric +" after push"], curr_sum[metric + " before push"])
-	# 	# return data_sum[-1][metric +" after push"], data_sum[-1][metric + " before push"]
-	# 	if sum_path is not None and best_sum is not None:
-	# 		print(best_metric)
-	# 		with open(sum_path+'.json', 'w') as f:
-	# 			json.dump(best_sum, f)
-	# 	return best_sum
+		# for i in range(max_step):
+		# 	curr_pos = self.save_curr_position()
+		# 	best_pts = self.prune_best(prune_method, metric, curr_pos)
+		# 	self.load_position(curr_pos)
+		# 	curr_sum = self.collect_data_summary(best_pts[0], best_pts[1], None)
+		# 	data_sum.append(curr_sum)
+		# 	print(curr_sum[metric +" after push"], curr_sum[metric + " before push"])
+		# return data_sum[-1][metric +" after push"], data_sum[-1][metric + " before push"]
+		if sum_path is not None and best_sum is not None:
+			print(best_metric)
+			with open(sum_path+'.json', 'w') as f:
+				json.dump(best_sum, f)
+		return best_sum
 
 	def sequential_prune_planning(self, prune_method, max_step=5, metric="count threshold", sum_path=None):
 		data_sum = []
@@ -953,7 +985,7 @@ class SingulationEnv:
 				json.dump(data_sum, f)
 		return data_sum
 
-	def prune_best(self, prune_method, metric="count threshold", position=None, sum_path=None):
+	def prune_best(self, prune_method, metric="count soft threshold", position=None, sum_path=None):
 		pt_lst = prune_method(self)
 		best_pt = None
 		# if metric == "avg centroid" or metric == "avg geometry":
@@ -977,7 +1009,147 @@ class SingulationEnv:
 			# return self.collect_data_summary(best_pt[0], best_pt[1], "/", sum_path=sum_path)
 		return best_pt
 
+	def count_threshold_data_generation(self, max_step=4):
+		input_data = []
+		item_label = []
+		action_label = []
+		# data_sum = []
+		for i in range(max_step):
+			curr_pos = self.save_curr_position()
+			best_pts = self.prune_best(no_prune, "count soft threshold", curr_pos)
+			if best_pts is None:
+				break
+			best_summary = self.collect_data_summary(best_pts[0], best_pts[1], None)
+			best_dist = best_summary["count soft threshold after push"] - best_summary["count soft threshold before push"]
+			if best_dist <= 0:
+				break
+			print(best_dist, best_summary["count threshold after push"] - best_summary["count threshold before push"])
+
+			# if metric == "avg centroid" or metric == "avg geometry":
+			
+			self.load_position(curr_pos)
+			
+			summary = self.collect_data_summary(best_pts[0], best_pts[1], None)
+			
+			if summary["count soft threshold after push"] - summary["count soft threshold before push"] >= best_dist:
+				# save: centroids, vertices, pts
+				# self.load_position(curr_pos)
+				state = []
+				action = []
+				for o in self.objs:
+					state.append(o.body.position[0])
+					state.append(o.body.position[1])
+					state.append(o.body.angle)
+					for v in o.vertices:
+						state.append(v[0])
+						state.append(v[1])
+				input_data.append(state)
+				item_label.append(summary["first contact object"])
+
+				if summary["first contact object"] == -1: 
+					continue
+
+				item_pos = curr_pos[summary["first contact object"]]
+				start_pt = best_pts[0] - np.array([item_pos[0], item_pos[1]])
+
+				vec = normalize(np.array(best_pts[1]) - np.array(best_pts[0]))
+				action.append(best_pts[0][0])
+				action.append(best_pts[0][1])
+				action.append(vec[0])
+				action.append(vec[1])
+				action_label.append(action)
+				# print(state)
+				# print(output)
+		
+			
+			# self.load_position(curr_pos)
+			# best_summary = self.collect_data_summary(best_pts[0], best_pts[1], None)
+			# data_sum.append(curr_sum)
+			# print(curr_sum["count threshold after push"], curr_sum["count threshold before push"])
+		# return data_sum[-1][metric +" after push"], data_sum[-1][metric + " before push"]
+		
+		return input_data, item_label, action_label
+
 if __name__ == "__main__":
+	path = "/nfs/diskstation/zdong/singulation_bc/"
+	# path = ""
+	# state_file = []
+	# label_file = []
+	for i in range(0, 10):
+		print(i)
+		state_file = []
+		label_file = []
+		item_label = []
+		while len(state_file) < 1024:
+			print(len(state_file))
+			test = SingulationEnv()
+			while True:
+				try:
+					test.create_random_env(7, 4)
+					break
+				except:
+					print("retry")
+
+			state, items, label = test.count_threshold_data_generation()
+			state_file.extend(state)
+			item_label.extend(items)
+			label_file.extend(label)
+		# state_file_bad.extend(state_bad)
+		# label_file_bad.extend(label_bad)
+		# print(len(state_bad))
+			np.save(path+str(i).zfill(3)+"in.npy", np.array(state_file))
+			np.save(path+str(i).zfill(3)+"item.npy", np.array(item_label))
+			np.save(path+str(i).zfill(3)+"out.npy", np.array(label_file))
+
+	# bc = []
+	# cp2d = []
+	# es = []
+
+	# model = BC()
+	# model.load_model()
+	# for i in range(0, 100):
+	# 	print(i)
+	# 	test = SingulationEnv()
+	# 	while True:
+	# 		try:
+	# 			test.create_random_env(7, 4)
+	# 			break
+	# 		except:
+	# 			print("retry")
+	# 	test.reset()
+	# 	state = []
+	# 	for o in test.objs:
+	# 		state.append(o.body.position[0])
+	# 		state.append(o.body.position[1])
+	# 		state.append(o.body.angle)
+	# 		for v in o.vertices:
+	# 			state.append(v[0])
+	# 			state.append(v[1])
+	# 	# input_data.append(state)
+	# 	raw_output = model.predict([state])[0][0]
+	# 	if np.any(raw_output == np.nan):
+	# 		continue
+
+	# 	pt1 = np.array([raw_output[0], raw_output[1]])
+	# 	pt2 = pt1 + np.array(normalize([raw_output[2], raw_output[3]]))
+	# 	print(pt1)
+	# 	print(pt2)
+	# 	summary = test.collect_data_summary(pt1.tolist(), pt2.tolist(), None)
+	# 	bc.append(summary["count threshold after push"] - summary["count threshold before push"])
+
+	# 	test.reset()
+	# 	best_pts = test.prune_best(no_prune, "count threshold", curr_pos)
+	# 	summary = test.collect_data_summary(best_pts[0], best_pts[1], None)
+	# 	es.append(summary["count threshold after push"] - summary["count threshold before push"])
+
+	# 	test.reset()
+	# 	pts = proposed9_sequential(test)
+	# 	summary = test.collect_data_summary(pts[0], pts[1], None)
+	# 	cp2d.append(summary["count threshold after push"] - summary["count threshold before push"])
+
+	# print(np.mean(bc), np.mean(es), np.mean(cp2d))
+
+
 
 	# metrics = ["min geometry", "count threshold", "avg geometry", "avg centroid", "min centroid"]
 
@@ -1045,42 +1217,68 @@ if __name__ == "__main__":
 				# dic_all = test.prune_best_summary_all(center_minpair_two_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"center_minpair_two_only", metrics=metrics)
 				# print("center_minpair_two_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
 
-	method = ["com_only", "no_prune", "cluster_only", "fcc_cluster_only", "Cluster2DSeq", "fcc_cluster_center_only", "center_minpair_only", "minpair_only"]
-	for num_obj in range(3, 9):
-		if not os.path.exists("sequence/"+str(num_obj)):
-			os.makedirs("sequence/"+str(num_obj))
-		for g in range(0, 1):
-			if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)):
-				os.makedirs("sequence/"+str(num_obj)+"/"+str(g))
-			for m in method:
-				if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)+"/"+m):
-					os.makedirs("sequence/"+str(num_obj)+"/"+str(g)+"/"+m)
-			for i in range(20):
-				print(num_obj, g, i)
-				test = SingulationEnv()
-				while True:
-					try:
-						test.create_random_env(num_obj, g)
-						break
-					except:
-						print("retry")
+	# for num_obj in range(7, 8):
+	# 	# if not os.path.exists("sequence/"+str(num_obj)):
+	# 	# 	os.makedirs("sequence/"+str(num_obj))
+	# 	for g in range(4):
+	# 		if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)+"/tree_search_center_minpair/"):
+	# 			os.makedirs("sequence/"+str(num_obj)+"/"+str(g)+"/tree_search_center_minpair/")
+	# 		for i in range(100):
+	# 			print(num_obj, g, i)
+	# 			test = SingulationEnv()
+	# 			with open("sequence/"+str(num_obj)+"/"+str(g)+"/no_prune/"+str(i)+".json") as json_data:
+	# 				dic = json.load(json_data)
+	# 			test.load_env(dic[0])
+	# 			test.reset()
+	# 			test.sequential_tree_prune_planning(center_minpair_only, max_step=4, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/tree_search_center_minpair/"+str(i))
 
-				test.reset()
-				test.sequential_prune_planning(no_prune, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/no_prune/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(com_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/com_only/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(cluster_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/cluster_only/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(fcc_cluster_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/fcc_cluster_only/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(minpair_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/minpair_only/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(fcc_cluster_center_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/fcc_cluster_center_only/"+str(i))
-				test.reset()
-				test.sequential_prune_planning(center_minpair_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/center_minpair_only/"+str(i))
-				test.reset()
-				test.sequential_policy_planning(proposed9_sequential, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/Cluster2DSeq/"+str(i))
-				test.reset()
+	# method = ["com_only", "no_prune", "cluster_only", "fcc_cluster_only", "Cluster2DSeq", "center_minpair_only", "minpair_only", "center_minpair_multistage", "center_minpair_finalstage", "center_minpair_midstage"]
+	# for num_obj in range(9, 10):
+	# 	if not os.path.exists("sequence/"+str(num_obj)):
+	# 		os.makedirs("sequence/"+str(num_obj))
+	# 	for g in range(4):
+	# 		if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)):
+	# 			os.makedirs("sequence/"+str(num_obj)+"/"+str(g))
+	# 		for m in method:
+	# 			if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)+"/"+m):
+	# 				os.makedirs("sequence/"+str(num_obj)+"/"+str(g)+"/"+m)
+	# 		for i in range(100):
+	# 			print(num_obj, g, i)
+	# 			test = SingulationEnv()
+	# 			with open("sequence/"+str(num_obj)+"/"+str(g)+"/no_prune/"+str(i)+".json") as json_data:
+	# 				dic = json.load(json_data)
+	# 			test.load_env(dic[0])
+	# 			# while True:
+	# 			# 	try:
+	# 			# 		test.create_random_env(num_obj, g)
+	# 			# 		break
+	# 			# 	except:
+	# 			# 		print("retry")
 
-				
+	# 			# test.reset()
+	# 			# test.sequential_prune_planning(no_prune, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/no_prune/"+str(i))
+	# 			# test.reset()
+	# 			# test.sequential_prune_planning(com_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/com_only/"+str(i))
+	# 			# test.reset()
+	# 			# test.sequential_prune_planning(cluster_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/cluster_only/"+str(i))
+	# 			# test.reset()
+	# 			# test.sequential_prune_planning(fcc_cluster_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/fcc_cluster_only/"+str(i))
+	# 			# test.reset()
+	# 			# test.sequential_prune_planning(minpair_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/minpair_only/"+str(i))
+	# 			# test.reset()
+	# 			# # test.sequential_prune_planning(fcc_cluster_center_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/fcc_cluster_center_only/"+str(i))
+	# 			# # test.reset()
+	# 			# test.sequential_prune_planning(center_minpair_only, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/center_minpair_only/"+str(i))
+	# 			# test.reset()
+	# 			# test.sequential_policy_planning(proposed9_sequential, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/Cluster2DSeq/"+str(i))
+	# 			# test.reset()
+
+	# 			test.reset()
+	# 			test.sequential_prune_planning(center_minpair_multistage, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/center_minpair_multistage/"+str(i))
+	# 			test.reset()
+	# 			test.sequential_prune_planning(center_minpair_finalstage, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/center_minpair_finalstage/"+str(i))
+	# 			test.reset()
+	# 			test.sequential_prune_planning(center_minpair_midstage, max_step=num_obj, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/center_minpair_midstage/"+str(i))
+	# 			test.reset()
+
+	

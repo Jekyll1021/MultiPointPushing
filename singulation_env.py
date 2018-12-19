@@ -18,9 +18,9 @@ import random
 from policies import *
 from prune import *
 
-PPM = 60.0  # pixels per meter
+PPM = 100.0  # pixels per meter
 TIME_STEP = 0.1
-SCREEN_WIDTH, SCREEN_HEIGHT = 720, 720
+SCREEN_WIDTH, SCREEN_HEIGHT = 1200, 1200
 
 GROUPS = [(1, 1, 15), (0.75, 1, 12), (0.5, 1, 9), (0.25, 1, 6)]
 
@@ -78,6 +78,20 @@ class Polygon:
 				return True
 		return False
 
+	def dist(self, other_polygon):
+		shape1 = self.fixtures[0].shape
+		shape2 = other_polygon.fixtures[0].shape
+		transform1 = Box2D.b2Transform()
+		pos1 = self.body.position
+		angle1 = self.body.angle
+		transform1.Set(pos1, angle1)
+		transform2 = Box2D.b2Transform()
+		pos2 = other_polygon.body.position
+		angle2 = other_polygon.body.angle
+		transform2.Set(pos2, angle2)
+		pointA, pointB, distance, iterations = Box2D.b2Distance(shapeA=shape1, shapeB=shape2, transformA=transform1, transformB=transform2)
+		return distance
+
 class SingulationEnv:
 	def __init__(self):
 
@@ -92,7 +106,7 @@ class SingulationEnv:
 		self.centroid = (0, 0)
 		self.bounding_circle_radius = 0
 
-	def create_random_env(self, num_objs=3, group=0):
+	def create_random_env(self, num_objs=3, group=0, min_threshold=0.0, max_threshold=0.3):
 		assert num_objs >= 1
 
 		if len(self.objs) > 0:
@@ -121,7 +135,8 @@ class SingulationEnv:
 				max_iter = 1000
 				while True:
 					max_iter -= 1
-					original_pos = np.array([np.random.uniform(-0.5*num_objs,0.5*num_objs),np.random.uniform(-0.5*num_objs,0.5*num_objs)]) + np.array(self.objs[-1].body.position)
+					# original_pos = np.array([np.random.uniform(-0.5*num_objs,0.5*num_objs),np.random.uniform(-0.5*num_objs,0.5*num_objs)]) + np.array(self.objs[-1].body.position)
+					original_pos = np.array([np.random.uniform(-1.8,1.8),np.random.uniform(-1.8,1.8)]) + np.array(self.objs[-1].body.position)
 					# original_pos = np.array([np.random.uniform(1,11),np.random.uniform(1,11)])
 					no_overlap = True
 					original_pos = np.clip(original_pos, 2, 10)
@@ -134,9 +149,37 @@ class SingulationEnv:
 						if obj.test_overlap(vertices, original_pos) or curr_polygon.test_overlap(obj.vertices, np.array(obj.body.position)):
 							no_overlap = False
 					if no_overlap:
-						self.objs.append(curr_polygon)
+						# adjust position to fit the range
+						min_dist = 1e2
+						min_dist_obj = -1
+						for i in range(len(self.objs)):
+							if curr_polygon.dist(self.objs[i]) < min_dist:
+								min_dist = curr_polygon.dist(self.objs[i])
+								min_dist_obj = i
+						if min_dist < min_threshold and min_dist > 0:
+							vector = np.array(original_pos) - np.array(self.objs[min_dist_obj].original_pos)
+							vector = vector * min_threshold / min_dist
+							original_pos = vector+np.array(self.objs[min_dist_obj].original_pos)
+						if min_dist > max_threshold and min_dist > 0:
+							vector = np.array(original_pos) - np.array(self.objs[min_dist_obj].original_pos)
+							vector = vector * max_threshold / min_dist
+							original_pos = vector+np.array(self.objs[min_dist_obj].original_pos)
+
+						body.DestroyFixture(fixture)
+						self.world.DestroyBody(body)
+
+						body = self.world.CreateDynamicBody(position=original_pos.tolist(), allowSleep=False)
+						fixture = body.CreatePolygonFixture(density=1, vertices=vertices.tolist(), friction=0.5)
+						curr_polygon = Polygon(body, [fixture], vertices, Colors[i % len(Colors)])
+						for obj in self.objs:
+							if obj.test_overlap(vertices, original_pos) or curr_polygon.test_overlap(obj.vertices, np.array(obj.body.position)):
+								no_overlap = False
+						if no_overlap:
+							self.objs.append(curr_polygon)
 						# prev_pos = original_pos
-						break
+							break
+						else: 
+							continue
 					else:
 						body.DestroyFixture(fixture)
 						self.world.DestroyBody(body)
@@ -264,9 +307,18 @@ class SingulationEnv:
 				vertices = [(v[0], SCREEN_HEIGHT - v[1]) for v in vertices]
 				
 				pygame.draw.polygon(self.screen, color, vertices, 0)
-				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 3)
+				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 5)
 
 			polygonShape.draw = my_draw_polygon
+
+			def my_draw_circle(circle, body, fixture, color):
+				position = body.transform * circle.pos * PPM
+				position = (position[0], SCREEN_HEIGHT - position[1])
+				pygame.draw.circle(self.screen, color, [int(
+				    x) for x in position], int(circle.radius * PPM))
+				# Note: Python 3.x will enforce that pygame get the integers it requests,
+				#       and it will not convert from float.
+			circleShape.draw = my_draw_circle
 		#
 
 
@@ -275,7 +327,7 @@ class SingulationEnv:
 		end_pt = np.array(end_pt)
 
 		self.rod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
-		self.rodfix = self.rod.CreatePolygonFixture(vertices=[(0.1, 0.1), (-0.1, 0.1), (-0.1, -0.1), (0.1, -0.1)])
+		self.rodfix = self.rod.CreateCircleFixture(radius=0.1)
 
 		vector = normalize(end_pt - np.array(self.rod.position))
 		self.rod.linearVelocity[0] = vector[0]
@@ -360,7 +412,7 @@ class SingulationEnv:
 				vertices = [(v[0], SCREEN_HEIGHT - v[1]) for v in vertices]
 				
 				pygame.draw.polygon(self.screen, color, vertices, 0)
-				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 3)
+				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 5)
 
 			polygonShape.draw = my_draw_polygon
 		#
@@ -458,9 +510,18 @@ class SingulationEnv:
 				vertices = [(v[0], SCREEN_HEIGHT - v[1]) for v in vertices]
 				
 				pygame.draw.polygon(self.screen, color, vertices, 0)
-				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 3)
+				pygame.draw.polygon(self.screen, (0,0,0,0), vertices, 5)
 
 			polygonShape.draw = my_draw_polygon
+
+			def my_draw_circle(circle, body, fixture, color):
+				position = body.transform * circle.pos * PPM
+				position = (position[0], SCREEN_HEIGHT - position[1])
+				pygame.draw.circle(self.screen, color, [int(
+				    x) for x in position], int(circle.radius * PPM))
+				# Note: Python 3.x will enforce that pygame get the integers it requests,
+				#       and it will not convert from float.
+			circleShape.draw = my_draw_circle
 		#
 
 
@@ -476,10 +537,10 @@ class SingulationEnv:
 		gripper2_pt = start_pt + np.array(gripper2_vector) * gripper_length / 2
 
 		self.rod = self.world.CreateKinematicBody(position=(gripper1_pt[0], gripper1_pt[1]), allowSleep=False)
-		self.rodfix = self.rod.CreatePolygonFixture(vertices=[(0.1, 0.1), (-0.1, 0.1), (-0.1, -0.1), (0.1, -0.1)])
+		self.rodfix = self.rod.CreateCircleFixture(radius=0.1)
 
 		self.rod2 = self.world.CreateKinematicBody(position=(gripper2_pt[0], gripper2_pt[1]), allowSleep=False)
-		self.rodfix2 = self.rod2.CreatePolygonFixture(vertices=[(0.1, 0.1), (-0.1, 0.1), (-0.1, -0.1), (0.1, -0.1)])
+		self.rodfix2 = self.rod2.CreateCircleFixture(radius=0.1)
 
 		self.rod.linearVelocity[0] = vector[0]
 		self.rod.linearVelocity[1] = vector[1]
@@ -654,6 +715,10 @@ class SingulationEnv:
 			summary[str(i)+" vertices"] = np.array(self.objs[i].vertices).tolist()
 			summary[str(i)+" disk coverage"] = self.objs[i].disk_coverage
 
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" before push"] = self.objs[i].dist(self.objs[j])
+
 		summary["avg centroid before push"] = self.avg_centroid()
 		summary["avg geometry before push"] = self.avg_geometry()
 		summary["min centroid before push"] = self.min_centroid()
@@ -674,6 +739,10 @@ class SingulationEnv:
 		summary["min geometry after push"] = self.min_geometry()
 		summary["count threshold after push"] = self.count_threshold()
 		summary["first contact object"] = first_contact
+
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" after push"] = self.objs[i].dist(self.objs[j])
 		
 		if sum_path is not None:
 			with open(sum_path+'summary.json', 'w') as f:
@@ -681,7 +750,7 @@ class SingulationEnv:
 		
 		return summary
 
-	def collect_data_summary_old(self, start_pt, end_pt, img_path, sum_path=None):
+	def collect_data_summary_old(self, start_pt, end_pt, img_path=None, sum_path=None):
 		summary = {}
 		abs_start_pt = np.array(start_pt)
 		abs_end_pt = np.array(end_pt)
@@ -722,7 +791,8 @@ class SingulationEnv:
 				self.reset()
 			else:
 				self.load_position(position)
-			summary = self.collect_data_summary_old(pts[0], pts[1], None)
+			# summary = self.collect_data_summary_old(pts[0], pts[1], None)
+			summary = self.collect_data_summary(pts[0], pts[1], None)
 			if summary[metric +" after push"] - summary[metric + " before push"] >= best_sep:
 				best_pt = pts
 				if position is None:
@@ -733,7 +803,7 @@ class SingulationEnv:
 		
 		if best_pt is not None:
 			self.reset()
-			return self.collect_data_summary_old(best_pt[0], best_pt[1], "/", sum_path=sum_path)
+			return self.collect_data_summary(best_pt[0], best_pt[1], "/", sum_path=sum_path)
 		return best_pt
 
 
@@ -902,10 +972,12 @@ class SingulationEnv:
 			self.objs[i].body.angle = position[i][2]
 
 	def load_env(self, dic):
-		assert (len(dic) - 13) % 6 == 0
-		num_obj = (len(dic) - 13) // 6
+		# assert (len(dic) - 13) % 6 == 0
+		# num_obj = (len(dic) - 13) // 6
+		assert (len(dic) - 5) % 6 == 0
+		num_obj = (len(dic) - 5) // 6
 		for i in range(num_obj):
-			original_pos = np.array(dic[str(i)+" original pos"])
+			original_pos = np.array(dic[str(i)+" original pos"])# + np.array([-1, 3])
 			vertices = np.array(dic[str(i)+" vertices"])
 			body = self.world.CreateDynamicBody(position=original_pos.tolist(), allowSleep=False)
 			fixture = body.CreatePolygonFixture(density=1, vertices=vertices.tolist(), friction=0.5)
@@ -941,221 +1013,19 @@ class SingulationEnv:
 				json.dump(data_sum, f)
 		return data_sum
 
-
 if __name__ == "__main__":
-# 	# metrics = ["min geometry", "count threshold", "avg geometry", "avg centroid", "min centroid"]
+	for num_obj in range(8, 9):
+		if not os.path.exists("original_dist/"+str(num_obj)):
+			os.makedirs("original_dist/"+str(num_obj))
 
-# 	# for num_obj in range(15, 16):
-# 	# 	if not os.path.exists("prune/"+str(num_obj)):
-# 	# 		os.makedirs("prune/"+str(num_obj))
-# 	# 	for g in range(1, len(GROUPS)):
-# 	# 	# for g in range(1):
-# 	# 		# print(num_obj, g)
-
-# 	# 		if not os.path.exists("prune/"+str(num_obj)+"/"+str(g)):
-# 	# 			os.makedirs("prune/"+str(num_obj)+"/"+str(g))
-# 	# 		for m in metrics:
-# 	# 			if not os.path.exists("prune/"+str(num_obj)+"/"+str(g)+"/"+m):
-# 	# 				os.makedirs("prune/"+str(num_obj)+"/"+str(g)+"/"+m)
-# 	# 		for i in range(100):
-# 	# 			print(num_obj, g, i)
-# 	# 			test = SingulationEnv()
-# 	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/avg centroid/"+str(i).zfill(2)+"no_prunesummary.json") as json_data:
-# 	# 				dic = json.load(json_data)
-# 	# 			test.load_env(dic)
-
-	# with open("sequence/8/2/fcc_cluster_only/9.json") as json_data:
-	# 	dic = json.load(json_data)
-	# for i in range(len(dic)):
-	# 	test = SingulationEnv()
-	# 	test.load_env(dic[i])
-	# 	test.step(dic[i]["start pt"], dic[i]["end pt"], "visual_sequence/"+str(i)+"/", display=True)
-
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(pairwise_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"pairwise_only", metrics=metrics)
-				# print("pairwise_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-				
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(cluster_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"cluster_only", metrics=metrics)
-				# print("cluster_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(cluster_pairwise_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"cluster_pairwise_only", metrics=metrics)
-				# print("cluster_pairwise_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(minpair_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"minpair_only", metrics=metrics)
-				# print("minpair_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(minpair_pairwise_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"minpair_pairwise_only", metrics=metrics)
-				# print("minpair_pairwise_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(center_minpair_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"center_minpair_only", metrics=metrics)
-				# print("center_minpair_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(center_minpair_two_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"center_minpair_two_only", metrics=metrics)
-				# print("center_minpair_two_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-
-				# test.reset()
-				# dic_all = test.prune_best_summary_all(fcc_cluster_only, "prune/"+str(num_obj)+"/"+str(g), str(i).zfill(2)+"fcc_cluster_only", metrics=metrics)
-				# print("fcc_cluster_only: " + str((dic_all[3]["avg centroid after push"] - dic_all[3]["avg centroid before push"]) / (dic["avg centroid after push"] - dic["avg centroid before push"])))
-				
-	# m = "count threshold"
-	# for num_obj in range(12, 16):
-	# 	if not os.path.exists("worst_visual_com/"+str(num_obj)):
-	# 		os.makedirs("worst_visual_com/"+str(num_obj))
-
-	# 	for g in range(0,2):
-	# 		if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)):
-	# 			os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g))
-
-	# 		# com_lst = []
-
-	# 		cluster_lst = []
-
-	# 		fcc_cluster_lst = []
-
-	# 		pair_lst = []
-
-	# 		for i in range(100):
-	# 			# print(num_obj, g, i)
-	# 			# with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"no_prunesummary.json") as json_data:
-	# 			# 	no_prune_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"com_onlysummary.json") as json_data:
-	# 				com_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"cluster_onlysummary.json") as json_data:
-	# 				cluster_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"pairwise_onlysummary.json") as json_data:
-	# 				pair_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"fcc_cluster_onlysummary.json") as json_data:
-	# 				fcc_cluster_dic = json.load(json_data)
-
-	# 			if (com_dic[m+" after push"] - com_dic[m+" before push"])>0:
-
-	# 			# com_lst.append((com_dic[m+" after push"] - com_dic[m+" before push"])/(no_prune_dic[m+" after push"] - no_prune_dic[m+" before push"]))
-	# 				cluster_lst.append((cluster_dic[m+" after push"] - cluster_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]))
-	# 				fcc_cluster_lst.append((fcc_cluster_dic[m+" after push"] - fcc_cluster_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]))
-	# 				pair_lst.append((pair_dic[m+" after push"] - pair_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]))
-
-
-	# 		# com_lst.sort()
-	# 		cluster_lst.sort()
-	# 		fcc_cluster_lst.sort()
-	# 		pair_lst.sort()
-
-	# 		for i in range(100):
-	# 			print(num_obj, g, i)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"no_prunesummary.json") as json_data:
-	# 				no_prune_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"com_onlysummary.json") as json_data:
-	# 				com_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"cluster_onlysummary.json") as json_data:
-	# 				cluster_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"fcc_cluster_onlysummary.json") as json_data:
-	# 				fcc_cluster_dic = json.load(json_data)
-	# 			with open("prune/"+str(num_obj)+"/"+str(g)+"/"+m+"/"+str(i).zfill(2)+"pairwise_onlysummary.json") as json_data:
-	# 				pair_dic = json.load(json_data)
-
-				# if (com_dic[m+" after push"] - com_dic[m+" before push"])/(no_prune_dic[m+" after push"] - no_prune_dic[m+" before push"]) <= com_lst[0]:
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com")
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/no_prune"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/no_prune")
-				# 	test = SingulationEnv()
-				# 	test.reset()
-				# 	test.load_env(no_prune_dic)
-				# 	test.reset()
-				# 	test.step(no_prune_dic["start pt"], no_prune_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/no_prune/", display=True)
-				# 	test.reset()
-				# 	test.step(com_dic["start pt"], com_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com/", display=True)
-
-				# if (com_dic[m+" after push"] - com_dic[m+" before push"]) > 0 and (cluster_dic[m+" after push"] - cluster_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]) <= cluster_lst[0]:
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/cluster"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/cluster")
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com")
-				# 	test = SingulationEnv()
-				# 	test.reset()
-				# 	test.load_env(no_prune_dic)
-				# 	test.step(com_dic["start pt"], com_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com/", display=True)
-				# 	test.reset()
-				# 	test.step(cluster_dic["start pt"], cluster_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/cluster/", display=True)
-
-				# if (com_dic[m+" after push"] - com_dic[m+" before push"])>0 and (fcc_cluster_dic[m+" after push"] - fcc_cluster_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]) <= fcc_cluster_lst[0]:
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/fcc_cluster"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/fcc_cluster")
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com")
-				# 	test = SingulationEnv()
-				# 	test.reset()
-				# 	test.load_env(no_prune_dic)
-				# 	test.step(com_dic["start pt"], com_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com/", display=True)
-				# 	test.reset()
-				# 	test.step(fcc_cluster_dic["start pt"], fcc_cluster_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/fcc_cluster/", display=True)
-
-				# if (com_dic[m+" after push"] - com_dic[m+" before push"])>0 and (pair_dic[m+" after push"] - pair_dic[m+" before push"])/(com_dic[m+" after push"] - com_dic[m+" before push"]) <= pair_lst[0]:
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/pair"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/pair")
-				# 	if not os.path.exists("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com"):
-				# 		os.makedirs("worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com")
-				# 	test = SingulationEnv()
-				# 	test.reset()
-				# 	test.load_env(no_prune_dic)
-				# 	test.step(com_dic["start pt"], com_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/com/", display=True)
-				# 	test.reset()
-				# 	test.step(pair_dic["start pt"], pair_dic["end pt"], "worst_visual_com/"+str(num_obj)+"/"+str(g)+"/"+str(i)+"/pair/", display=True)
-
-
-
-
-
-	# method = ["com_only", "no_prune", "max_gain_only", "Cluster2DSeq", "two_only"]
-	# method = ["com_only", "max_gain_only", "Cluster2DSeq", "two_only"]
-	# for num_obj in range(3, 6):
-	# 	if not os.path.exists("sequence/"+str(num_obj)):
-	# 		os.makedirs("sequence/"+str(num_obj))
-	# 	for g in range(len(GROUPS)):
-	# 		if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)):
-	# 			os.makedirs("sequence/"+str(num_obj)+"/"+str(g))
-	# 		for m in method:
-	# 			if not os.path.exists("sequence/"+str(num_obj)+"/"+str(g)+"/"+m):
-	# 				os.makedirs("sequence/"+str(num_obj)+"/"+str(g)+"/"+m)
-	# 		for i in range(20):
-	# 			print(i)
-	# 			test = SingulationEnv()
-	# 			while True:
-	# 				try:
-	# 						test.create_random_env(num_obj, g)
-	# 						break
-	# 				except:
-	# 						print("retry")
-
-	# 			test.reset()
-	# 			test.sequential_prune_planning(com_only, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/com_only/"+str(i))
-	# 			test.reset()
-	# 			# test.sequential_prune_planning(no_prune, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/no_prune/"+str(i))
-	# 			# test.reset()
-	# 			test.sequential_prune_planning(max_gain_only, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/max_gain_only/"+str(i))
-	# 			test.reset()
-	# 			test.sequential_prune_planning(two_only, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/two_only/"+str(i))
-	# 			test.reset()
-	# 			test.sequential_policy_planning(proposed9_sequential, sum_path="sequence/"+str(num_obj)+"/"+str(g)+"/Cluster2DSeq/"+str(i))
-	# 			test.reset()
-	
-	for num_obj in range(3, 8):
-		if not os.path.exists("new_proposed/"+str(num_obj)):
-			os.makedirs("new_proposed/"+str(num_obj))
-
-		for g in range(len(GROUPS)):
+		for g in range(1,2):
 			print(num_obj, g)
 			
-			if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)):
-				os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g))
-			for i in range(100, 200):
+			if not os.path.exists("original_dist/"+str(num_obj)+"/"+str(g)+"/ac"):
+				os.makedirs("original_dist/"+str(num_obj)+"/"+str(g)+"/ac")
+				os.makedirs("original_dist/"+str(num_obj)+"/"+str(g)+"/ct")
+
+			for i in range(0, 100):
 				print(i)
 				test = SingulationEnv()
 				while True:
@@ -1165,324 +1035,5 @@ if __name__ == "__main__":
 					except:
 						print("retry")
 
-				# for ind in range(num_obj*256):
-				
-				# 	obj_ind = ind // 256
-				# 	theta1 = ((ind % 256) // 16) * 3.14 * 2 / 16
-				# 	theta2 = (ind % 16) * 3.14 * 2 / 16
-				# 	if theta1 == theta2:
-				# 		continue
-				# 	pt1 = (math.cos(theta1) * test.objs[obj_ind].bounding_circle_radius, math.sin(theta1) * test.objs[obj_ind].bounding_circle_radius)
-				# 	pt2 = (math.cos(theta2) * test.objs[obj_ind].bounding_circle_radius, math.sin(theta2) * test.objs[obj_ind].bounding_circle_radius)
-				# 	# print(pt1, pt2)
-				# 	pts = parametrize_by_bounding_circle(np.array(pt1) + np.array(test.objs[obj_ind].original_pos), np.array(pt2) - np.array(pt1), test.objs[obj_ind].original_pos, test.objs[obj_ind].bounding_circle_radius+0.1)
-				# 	if pts is None:
-				# 		print(obj_ind, np.array(pt1) + np.array(test.objs[obj_ind].original_pos), np.array(pt2) - np.array(pt1), test.objs[obj_ind].original_pos, test.objs[obj_ind].bounding_circle_radius+0.1)
-				# 		continue
-				# 	test.reset()
-
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution/")
-				summary = test.prune_best(no_prune, metric="mean separation", sum_path="new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution/"+str(i))
-				# 	summary = test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution/"+str(i)+"_"+str(ind))
-				# 	test.reset()
-
-				# 	if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable/"):
-				# 		os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable/")
-				# 	# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_two/"):
-				# 	# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_two/")
-				# 	# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_area/"):
-				# 	# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_area/")
-
-				# 	if abs(abs(theta1 - theta2) - 3.14) < 0.1:
-				# 		summary = test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable/"+str(i)+"_"+str(ind))
-				# 		test.reset()
-						# summary = test.collect_data_two_points_summary(pts[0], pts[1], test.objs[obj_ind].bounding_circle_radius*0.6, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_two/"+str(i)+"_"+str(ind))
-						# test.reset()
-						# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/distribution_stable_area/"+str(i)+"_"+str(ind))
-						# test.reset()
-	# 			group_log["bruteForce"].append(time.perf_counter()-timelog_bf)
-
-
-				
-				test.reset()
-				pts = proposed0(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/max_gain/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/max_gain/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_area/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_area/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_two/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/max_gain/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed0_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["proposed0"].append(time.perf_counter()-timelog_p)
-				
-				test.reset()
-
-				# timelog_p = time.perf_counter()
-				pts = proposed1(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_contact_range/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_contact_range/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/min_contact_range/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed1_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["proposed1"].append(time.perf_counter()-timelog_p)
-				
-				# test.reset()
-				# pts = proposed2(test)
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_two/")
-				# if pts is not None:
-				# 	test.reset()
-				# 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_area/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_two_points_summary(pts[0], pts[1], test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed2_two/"+str(i))
-
-				# test.reset()
-				# pts = proposed3(test)
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_two/")
-				# if pts is not None:
-				# 	test.reset()
-				# 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_area/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_two_points_summary(pts[0], pts[1], test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed3_two/"+str(i))
-
-				# test.reset()
-				# timelog_p = time.perf_counter()
-				# pts = proposed4(test)
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_two/")
-				# if pts is not None:
-				# 	test.reset()
-				# 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed4_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["proposed4"].append(time.perf_counter()-timelog_p)
-				
-				# test.reset()
-				# pts = proposed5(test)
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_two/")
-				# if pts is not None:
-				# 	test.reset()
-				# 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_area/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_two_points_summary(pts[0], pts[1], test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed5_two/"+str(i))
-
-				test.reset()
-				pts = proposed6(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/two_cluster_separation/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/two_cluster_separation/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/two_cluster_separation/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed6_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["proposed6"].append(time.perf_counter()-timelog_p)
-				
-				# # test.reset()
-				# # pts = proposed7(test)
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7/")
-				# # # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_area/"):
-				# # # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_area/")
-				# # # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_two/"):
-				# # # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_two/")
-				# # if pts is not None:
-				# # 	test.reset()
-				# # 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7/"+str(i))
-				# # 	# test.reset()
-				# # 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_area/"+str(i))
-				# # 	# test.reset()
-				# # 	# summary = test.collect_data_two_points_summary(pts[0], pts[1], test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed7_two/"+str(i))
-
-				test.reset()
-				# timelog_p = time.perf_counter()
-				pts = proposed8(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/min_overlap/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed8_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["proposed8"].append(time.perf_counter()-timelog_p)
-				
-				test.reset()
-				# timelog_p = time.perf_counter()
-				pts = proposed9(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9/")
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_area/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_area/")
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_two/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_two/")
-				# if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)):
-				# 	os.makedirs("best_worst/"+str(num_obj)+"/"+str(g))
-				if pts is not None:
-					test.reset()
-					summary = test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9/"+str(i))
-					test.reset()
-					summary_area = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_area/"+str(i))
-					for l in np.arange(0.1, 2, 0.1):
-						test.reset()
-						summary_two = test.collect_data_two_points_summary(pts[0], pts[1], l, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/proposed9_two/"+str(i)+"_"+str(int(l*10)))
-					# if (summary_area['mean separation after push'] - summary_area['mean separation before push']) - (summary['mean separation after push'] - summary['mean separation before push']) > 2:
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i)):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i))
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i)+"area/"):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i)+"area/")
-					# 	test.reset()
-					# 	test.step(pts[0], pts[1], "best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i)+"/", display=True)
-					# 	test.reset()
-					# 	test.step_area(pts[0], pts[1], 0.4, "best_worst/"+str(num_obj)+"/"+str(g)+"/best_area/"+str(i)+"area/", display=True)
-
-
-					# if (summary_area['mean separation after push'] - summary_area['mean separation before push']) - (summary['mean separation after push'] - summary['mean separation before push']) < -1:
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i)):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i))
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i)+"area/"):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i)+"area/")
-					# 	test.reset()
-					# 	test.step(pts[0], pts[1], "best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i)+"/", display=True)
-					# 	test.reset()
-					# 	test.step_area(pts[0], pts[1], 0.4, "best_worst/"+str(num_obj)+"/"+str(g)+"/worst_area/"+str(i)+"area/", display=True)
-
-
-					# if (summary_two['mean separation after push'] - summary_area['mean separation before push']) - (summary['mean separation after push'] - summary['mean separation before push']) > 3:
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i)):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i))
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i)+"two"):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i)+"two")
-					# 	test.reset()
-					# 	test.step(pts[0], pts[1], "best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i)+"/", display=True)
-					# 	test.reset()
-					# 	test.step_two_points(pts[0], pts[1], 0.6 * test.objs[find_best_remove_object(test)].bounding_circle_radius, "best_worst/"+str(num_obj)+"/"+str(g)+"/best_two/"+str(i)+"two/", display=True)
-
-
-					# if (summary_two['mean separation after push'] - summary_area['mean separation before push']) - (summary['mean separation after push'] - summary['mean separation before push']) < -2.5:
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i)):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i))
-					# 	if not os.path.exists("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i)+"two"):
-					# 		os.makedirs("best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i)+"two")
-					# 	test.reset()
-					# 	test.step(pts[0], pts[1], "best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i)+"/", display=True)
-					# 	test.reset()
-					# 	test.step_two_points(pts[0], pts[1], 0.6 * test.objs[find_best_remove_object(test)].bounding_circle_radius, "best_worst/"+str(num_obj)+"/"+str(g)+"/worst_two/"+str(i)+"two/", display=True)
-
-
-
-				# group_log["proposed9"].append(time.perf_counter()-timelog_p)
-				
-				test.reset()
-				# timelog_p = time.perf_counter()
-				pts = boundaryShear(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_area/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_area/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_two/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear/"+str(i))
-					# test.reset()
-					# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_area/"+str(i))
-					# for l in np.arange(0.1, 2, 0.1):
-					# 	test.reset()
-					# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/boundaryShear_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["boundaryShear"].append(time.perf_counter()-timelog_p)
-				
-				test.reset()
-				# timelog_p = time.perf_counter()
-				pts = clusterDiffusion(test)
-				if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion/"):
-					os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_area/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_area/")
-				# if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_two/"):
-				# 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_two/")
-				if pts is not None:
-					test.reset()
-					test.collect_data_summary_old(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion/"+str(i))
-					# test.reset()
-					# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_area/"+str(i))
-					# for l in np.arange(0.1, 2, 0.1):
-					# 	test.reset()
-					# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/clusterDiffusion_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["clusterDiffusion"].append(time.perf_counter()-timelog_p)
-				
-				# test.reset()
-				# timelog_p = time.perf_counter()
-				# pts = maximumClearanceRatio(test)
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_area/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_area/")
-				# # if not os.path.exists("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_two/"):
-				# # 	os.makedirs("new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_two/")
-				# if pts is not None:
-				# 	test.reset()
-				# 	test.collect_data_summary(pts[0], pts[1], "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio/"+str(i))
-				# 	# test.reset()
-				# 	# summary = test.collect_data_area_summary(pts[0], pts[1], 0.3, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_area/"+str(i))
-				# 	# for l in np.arange(0.1, 2, 0.1):
-				# 	# 	test.reset()
-				# 	# 	summary = test.collect_data_two_points_summary(pts[0], pts[1], l * test.objs[find_best_remove_object(test)].bounding_circle_radius, "/", "new_proposed/"+str(num_obj)+"/"+str(g)+"/maximumClearanceRatio_two/"+str(i)+"_"+str(int(l*10)))
-				# group_log["maximumClearanceRatio"].append(time.perf_counter()-timelog_p)
-
+				summary = test.prune_best(no_prune, metric="avg centroid", sum_path="original_dist/"+str(num_obj)+"/"+str(g)+"/ac/"+str(i))
+				summary = test.prune_best(no_prune, metric="count threshold", sum_path="original_dist/"+str(num_obj)+"/"+str(g)+"/ct/"+str(i))
