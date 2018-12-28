@@ -164,7 +164,7 @@ def find_clusters(env, cluster_num, first_obj=-1):
 # Policies #
 ############
 
-def proposed0(env):
+def center_object_removal(env):
 	push_obj = find_best_remove_object(env)
 	dist_lst = find_closest_ranking_to_object(env, push_obj)
 	seg = np.array(env.objs[dist_lst[0]].original_pos) - np.array(env.objs[dist_lst[1]].original_pos)
@@ -184,7 +184,7 @@ def proposed0(env):
 	
 	return pts
 
-def proposed1(env):
+def min_contact_range(env):
 	push_obj = find_best_remove_object(env)
 	vertices = np.array(env.objs[push_obj].vertices) + np.array(env.objs[push_obj].original_pos)
 	min_contact_range = 1e2
@@ -229,73 +229,7 @@ def proposed2(env):
 			push_pts = pts
 	return push_pts
 
-def proposed3(env):
-	push_obj = find_best_remove_object(env)
-	min_dist_sum = 1e2
-	push_pts = None
-	for j in range(16):
-		vector = (math.cos(2*j*3.14 / 16), math.sin(2*j*3.14 / 16))
-		pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
-		max_dist_l = 0
-		max_dist_r = 0
-		for k in range(len(env.objs)):
-			if k != push_obj and scalarProject(pts[0], pts[1], env.objs[k].original_pos) > 0:
-				side_com = side_of_point_on_line(pts[0], pts[1], env.objs[k].original_pos)
-				if side_com < 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < 1 and (pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius - env.objs[push_obj].bounding_circle_radius) ** 2 * (4 - scalarProject(pts[0], pts[1], env.objs[k].original_pos)) / 4 > max_dist_l: #* (1 - scalarProject(pts[0], pts[1], env.objs[k].original_pos))
-					max_dist_l = (pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius - 1) ** 2 * (4 - scalarProject(pts[0], pts[1], env.objs[k].original_pos)) / 4
-				if side_com > 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < 1 and (pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius - env.objs[push_obj].bounding_circle_radius) ** 2 * (4 - scalarProject(pts[0], pts[1], env.objs[k].original_pos)) / 4 > max_dist_r:
-					max_dist_r = (pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius - 1) ** 2 * (4 - scalarProject(pts[0], pts[1], env.objs[k].original_pos)) / 4
-		if max_dist_l + max_dist_r <= min_dist_sum:
-			min_dist_sum = max_dist_l + max_dist_r
-			push_pts = pts
-	max_away = normalize(findMaxAwayVector([env.objs[push_obj].original_pos - np.array([env.objs[i].body.position[0], env.objs[i].body.position[1]]) for i in range(len(env.objs)) if i != push_obj]))
-	vector = normalize(np.array(pts[1]) - np.array(pts[0]))
-	# print(min_dist_sum, euclidean_dist(vector, max_away))
-	return push_pts
-	
-def proposed4(env):
-	push_obj = find_best_remove_object(env)
-	min_dist_sum = 1e2
-	push_pts = None
-	for j in range(16):
-		vector = (math.cos(2*j*3.14 / 16), math.sin(2*j*3.14 / 16))
-		pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
-		max_dist_l = 0
-		max_dist_r = 0
-		for k in range(len(env.objs)):
-			if k != push_obj and scalarProject(pts[0], pts[1], env.objs[k].original_pos) > 0:
-				side_com = side_of_point_on_line(pts[0], pts[1], env.objs[k].original_pos)
-				if side_com < 0 and env.objs[k].bounding_circle_radius - pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) > 0 and env.objs[k].bounding_circle_radius - pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) > max_dist_l:
-					max_dist_l = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-				if side_com > 0 and env.objs[k].bounding_circle_radius - pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) > 0 and env.objs[k].bounding_circle_radius - pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) > max_dist_r:
-					max_dist_r = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-		if max_dist_l + max_dist_r < min_dist_sum:
-			min_dist_sum = max_dist_l + max_dist_r
-			push_pts = pts
-	return push_pts
-
-def proposed5(env):
-	push_obj = find_best_remove_object(env)
-	min_dist_sum = 1e2
-	push_pts = None
-	for j in range(16):
-		vector = (math.cos(2*j*3.14 / 16), math.sin(2*j*3.14 / 16))
-		pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
-		min_dist_l = 1e2
-		min_dist_r = 1e2
-		for k in range(len(env.objs)):
-			if k != push_obj and scalarProject(pts[0], pts[1], env.objs[k].original_pos) > 0:
-				side_com = side_of_point_on_line(pts[0], pts[1], env.objs[k].original_pos)
-				if side_com < 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_l:
-					min_dist_l = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-				if side_com > 0 and pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius < min_dist_r:
-					min_dist_r = pointToLineDistance(pts[0], pts[1], env.objs[k].original_pos) - env.objs[k].bounding_circle_radius
-		if min_dist_l + min_dist_r < min_dist_sum:
-			min_dist_sum = min_dist_l + min_dist_r
-			push_pts = pts
-	return push_pts
-
-def proposed6(env):
+def two_cluster_separation(env):
 	"""separate two cluster"""
 	cluster_lst = find_clusters(env, 2)
 
@@ -322,15 +256,7 @@ def proposed6(env):
 			push_pts = parametrize_by_bounding_circle(env.objs[obj].original_pos, v, env.objs[obj].original_pos, env.objs[obj].bounding_circle_radius+0.1)
 	return push_pts
 
-def proposed7(env):
-	"""find two objects and smash them together"""
-	push_obj = find_best_remove_object(env)
-	target_obj = find_best_remove_object(env, [push_obj])
-	v = np.array(env.objs[target_obj].original_pos - env.objs[push_obj].original_pos)
-	pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, v, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
-	return pts
-
-def proposed8(env):
+def min_overlap(env):
 	"""group objects into 3 clusters and do proposed2"""
 	push_obj = find_best_remove_object(env)
 	cluster_lst = find_clusters(env, 3, first_obj=push_obj)
@@ -364,7 +290,7 @@ def proposed8(env):
 			push_pts = pts
 	return push_pts
 
-def proposed9(env):
+def clusterPush2D(env):
 	cluster_lst = find_dist_center_obj_cluster(env)
 	push_obj = cluster_lst[0][0]
 	push_pts = None
@@ -380,11 +306,11 @@ def proposed9(env):
 					dist = euclidean_dist(vector, max_away)
 					push_pts = parametrize_by_bounding_circle(env.objs[push_obj].original_pos, vector, env.objs[push_obj].original_pos, env.objs[push_obj].bounding_circle_radius+0.1)
 	else:
-		push_pts = proposed8(env)
+		push_pts = min_overlap(env)
 
 	return push_pts
 
-def proposed9_sequential(env):
+def clusterPush2D_sequential(env):
 	cluster_lst = find_dist_cluster(env)
 	push_obj = cluster_lst[0][0]
 	push_pts = None
@@ -409,7 +335,7 @@ def proposed9_sequential(env):
 			if len(cluster_to_push) < len(cluster_lst[i]):
 				cluster_to_push = cluster_lst[i]
 		if len(cluster_to_push) == 1:
-			push_pts = proposed8(env)
+			push_pts = min_overlap(env)
 		else:
 			vertices_lst = []
 			for o in cluster_to_push:
