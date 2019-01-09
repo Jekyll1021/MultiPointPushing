@@ -63,22 +63,28 @@ class Polygon:
 		self.bounding_circle_radius = math.sqrt(max((self.vertices)[:,0]**2 + (self.vertices)[:,1]**2))
 		self.disk_coverage = compute_area(self.vertices)/(self.bounding_circle_radius**2*math.pi)
 
-	def test_overlap(self, other_vertices, other_centroid):
+	def test_overlap(self, other_polygon):
 		"""test if the current polygon overlaps with a polygon of another polygon 
 		with other_centroid as centroid and other_vertices as vertices(all in numpy array)"""
-		abs_vertices = (other_vertices + other_centroid).tolist()
-		for i in range(len(abs_vertices)):
-			for fix in self.fixtures:
-				if fix.TestPoint(abs_vertices[i]) \
-				or fix.TestPoint(((np.array(abs_vertices[i])+other_centroid)/2).tolist())\
-				or fix.TestPoint(((np.array(abs_vertices[i])+np.array(abs_vertices[i-1]))/2).tolist()):
-					return True
-		for fix in self.fixtures:
-			if fix.TestPoint(other_centroid):
-				return True
-		return False
+		if self.dist(other_polygon) > 0:
+			return False
+		return True
+
+	# def test_rod_overlap(self, rod_fix):
+	# 	"""works for one polygon and one circle fixture"""
+	# 	abs_vertices = (self.vertices + self.original_pos).tolist()
+	# 	for i in range(len(abs_vertices)):
+	# 		if rod_fix.TestPoint(abs_vertices[i]) \
+	# 		or rod_fix.TestPoint(((np.array(abs_vertices[i])+self.original_pos)/2).tolist())\
+	# 		or rod_fix.TestPoint(((np.array(abs_vertices[i])+np.array(abs_vertices[i-1]))/2).tolist()):
+	# 			return True
+	# 	for rod_fix in self.fixtures:
+	# 		if rod_fix.TestPoint(self.original_pos):
+	# 			return True
+	# 	return False
 
 	def dist(self, other_polygon):
+		"""do not work on a polygon and a rod"""
 		shape1 = self.fixtures[0].shape
 		shape2 = other_polygon.fixtures[0].shape
 		transform1 = Box2D.b2Transform()
@@ -90,6 +96,21 @@ class Polygon:
 		angle2 = other_polygon.body.angle
 		transform2.Set(pos2, angle2)
 		pointA, pointB, distance, iterations = Box2D.b2Distance(shapeA=shape1, shapeB=shape2, transformA=transform1, transformB=transform2)
+		return distance
+
+	def dist_rod(self, rod_fix, rod_body):
+		shape1 = self.fixtures[0].shape
+		shape2 = rod_fix.shape
+		transform1 = Box2D.b2Transform()
+		pos1 = self.body.position
+		angle1 = self.body.angle
+		transform1.Set(pos1, angle1)
+		transform2 = Box2D.b2Transform()
+		pos2 = rod_body.position
+		angle2 = rod_body.angle
+		transform2.Set(pos2, angle2)
+		pointA, pointB, distance, iterations = Box2D.b2Distance(shapeA=shape1, shapeB=shape2, transformA=transform1, transformB=transform2)
+		# print(distance)
 		return distance
 
 class SingulationEnv:
@@ -146,7 +167,7 @@ class SingulationEnv:
 					# curr_polygon = Polygon(body, fixture, vertices, Colors[i])
 					curr_polygon = Polygon(body, [fixture], vertices, Colors[i % len(Colors)])
 					for obj in self.objs:
-						if obj.test_overlap(vertices, original_pos) or curr_polygon.test_overlap(obj.vertices, np.array(obj.body.position)):
+						if obj.test_overlap(curr_polygon) or curr_polygon.test_overlap(obj):
 							no_overlap = False
 					if no_overlap:
 						# adjust position to fit the range
@@ -171,8 +192,10 @@ class SingulationEnv:
 						body = self.world.CreateDynamicBody(position=original_pos.tolist(), allowSleep=False)
 						fixture = body.CreatePolygonFixture(density=1, vertices=vertices.tolist(), friction=0.5)
 						curr_polygon = Polygon(body, [fixture], vertices, Colors[i % len(Colors)])
+
+						no_overlap = True
 						for obj in self.objs:
-							if obj.test_overlap(vertices, original_pos) or curr_polygon.test_overlap(obj.vertices, np.array(obj.body.position)):
+							if obj.test_overlap(curr_polygon) or curr_polygon.test_overlap(obj):
 								no_overlap = False
 						if no_overlap:
 							self.objs.append(curr_polygon)
@@ -293,7 +316,7 @@ class SingulationEnv:
 		self.bounding_circle_radius = math.sqrt(max((self.bounding_convex_hull - np.array(self.centroid))[:,0]**2 + (self.bounding_convex_hull - np.array(self.centroid))[:,1]**2))
 
 	
-	def step(self, start_pt, end_pt, path, display=False):
+	def step(self, start_pt, end_pt, path, display=False, check_reachable=True):
 
 		# display
 		if display:
@@ -328,8 +351,30 @@ class SingulationEnv:
 
 		self.rod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
 		self.rodfix = self.rod.CreateCircleFixture(radius=0.1)
+		vector = np.array(normalize(end_pt - np.array(start_pt)))
 
-		vector = normalize(end_pt - np.array(self.rod.position))
+		vertices_lst=[(0.0, 0.1), (0.0, -0.1), (-0.3, -0.1), (-0.3, 0.1)]
+
+		testrod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
+		testrodfix = testrod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		# reachability check
+		if check_reachable:
+			while (np.count_nonzero(np.array([o.dist_rod(testrodfix, testrod) for o in self.objs]) <= 0) > 0):
+				# print(start_pt, [o.dist_rod(self.rodfix, self.rod) for o in self.objs])
+				start_pt -= 0.1 * vector
+				testrod.DestroyFixture(testrodfix)
+				self.world.DestroyBody(testrod)
+
+				testrod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
+				testrodfix = testrod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		testrod.DestroyFixture(testrodfix)
+		self.world.DestroyBody(testrod)
+
+		self.rod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
+		self.rodfix = self.rod.CreateCircleFixture(radius=0.1)
+
 		self.rod.linearVelocity[0] = vector[0]
 		self.rod.linearVelocity[1] = vector[1]
 		self.rod.angularVelocity = 0.0
@@ -398,7 +443,7 @@ class SingulationEnv:
 
 		return first_contact
 
-	def step_area(self, start_pt, end_pt, gripper_width, path, display=False):
+	def step_area(self, start_pt, end_pt, gripper_width, path, display=False, check_reachable=True):
 
 		# display
 		if display:
@@ -424,9 +469,19 @@ class SingulationEnv:
 
 		vertices_lst=[(0.1, gripper_width/2), (-0.1, gripper_width/2), (-0.1, -gripper_width/2), (0.1, -gripper_width/2)]
 
-		vector = normalize(end_pt - start_pt)
+		vector = np.array(normalize(end_pt - start_pt))
 		self.rod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
 		self.rodfix = self.rod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		# reachability check
+		if check_reachable:
+			while (np.count_nonzero(np.array([o.dist_rod(self.rodfix, self.rod) for o in self.objs]) <= 0) > 0):
+				# print(start_pt, [o.dist_rod(self.rodfix, self.rod) for o in self.objs])
+				start_pt -= 0.1 * vector
+				self.rod.DestroyFixture(self.rodfix)
+				self.world.DestroyBody(self.rod)
+				self.rod = self.world.CreateKinematicBody(position=(start_pt[0], start_pt[1]), allowSleep=False)
+				self.rodfix = self.rod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
 
 		self.rod.linearVelocity[0] = vector[0]
 		self.rod.linearVelocity[1] = vector[1]
@@ -496,7 +551,7 @@ class SingulationEnv:
 
 		return first_contact
 
-	def step_two_points(self, start_pt, end_pt, gripper_length, path, display=False):
+	def step_two_points(self, start_pt, end_pt, gripper_length, path, display=False, check_reachable=True):
 
 		# display
 		if display:
@@ -529,12 +584,45 @@ class SingulationEnv:
 		start_pt = np.array(start_pt)
 		end_pt = np.array(end_pt)
 
-		vector = normalize(end_pt - start_pt)
+		vector = np.array(normalize(end_pt - start_pt))
 		gripper1_vector = normalize((1, -(vector[0] / (vector[1]+1e-8))))
 		gripper2_vector = normalize((-1, (vector[0] / (vector[1]+1e-8))))
 		# print(np.array(gripper1_vector), gripper_length)
 		gripper1_pt = start_pt + np.array(gripper1_vector) * gripper_length / 2
 		gripper2_pt = start_pt + np.array(gripper2_vector) * gripper_length / 2
+
+		vertices_lst=[(0.0, 0.1), (0.0, -0.1), (-0.3, -0.1), (-0.3, 0.1)]
+
+		testrod = self.world.CreateKinematicBody(position=(gripper1_pt[0], gripper1_pt[1]), allowSleep=False)
+		testrodfix = testrod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		testrod2 = self.world.CreateKinematicBody(position=(gripper2_pt[0], gripper2_pt[1]), allowSleep=False)
+		testrodfix2 = testrod2.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		# reachability check
+		if check_reachable:
+			while (np.count_nonzero(np.array([o.dist_rod(testrodfix, testrod) for o in self.objs]) <= 0) > 0):
+				# print(start_pt, [o.dist_rod(self.rodfix, self.rod) for o in self.objs])
+				gripper1_pt -= 0.1 * vector
+				gripper2_pt -= 0.1 * vector
+
+				testrod.DestroyFixture(testrodfix)
+				self.world.DestroyBody(testrod)
+
+				testrod2.DestroyFixture(testrodfix2)
+				self.world.DestroyBody(testrod2)
+
+				testrod = self.world.CreateKinematicBody(position=(gripper1_pt[0], gripper1_pt[1]), allowSleep=False)
+				testrodfix = testrod.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+				testrod2 = self.world.CreateKinematicBody(position=(gripper2_pt[0], gripper2_pt[1]), allowSleep=False)
+				testrodfix2 = testrod2.CreatePolygonFixture(vertices=[rotatePt(pt, vector) for pt in vertices_lst])
+
+		testrod.DestroyFixture(testrodfix)
+		self.world.DestroyBody(testrod)
+
+		testrod2.DestroyFixture(testrodfix2)
+		self.world.DestroyBody(testrod2)
 
 		self.rod = self.world.CreateKinematicBody(position=(gripper1_pt[0], gripper1_pt[1]), allowSleep=False)
 		self.rodfix = self.rod.CreateCircleFixture(radius=0.1)
@@ -700,12 +788,13 @@ class SingulationEnv:
 				count += 1
 		return count
 
-	def collect_data_summary(self, start_pt, end_pt, img_path, sum_path=None):
+	def collect_data_summary(self, start_pt, end_pt, img_path=None, sum_path=None):
 		summary = {}
 		abs_start_pt = np.array(start_pt)
 		abs_end_pt = np.array(end_pt)
 		summary["start pt"] = abs_start_pt.tolist()
 		summary["end pt"] = abs_end_pt.tolist()
+		summary["gripper_width"] = 0.0
 		
 		for i in range(len(self.objs)):
 			summary[str(i)+" dist to pushing line"] = pointToLineDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
@@ -744,37 +833,6 @@ class SingulationEnv:
 			for j in range(i, len(self.objs)):
 				summary[str(i)+" to "+str(j)+" after push"] = self.objs[i].dist(self.objs[j])
 		
-		if sum_path is not None:
-			with open(sum_path+'summary.json', 'w') as f:
-				json.dump(summary, f)
-		
-		return summary
-
-	def collect_data_summary_old(self, start_pt, end_pt, img_path=None, sum_path=None):
-		summary = {}
-		abs_start_pt = np.array(start_pt)
-		abs_end_pt = np.array(end_pt)
-		summary["start pt"] = abs_start_pt.tolist()
-		summary["end pt"] = abs_end_pt.tolist()
-		
-		for i in range(len(self.objs)):
-			summary[str(i)+" dist to pushing line"] = pointToLineDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
-			summary[str(i)+" original pos"] = np.array(self.objs[i].body.position).tolist()
-			summary[str(i)+" project dist"] = projectedPtToStartDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
-			summary[str(i)+" vertices"] = np.array(self.objs[i].vertices).tolist()
-			summary[str(i)+" disk coverage"] = self.objs[i].disk_coverage
-
-		summary["mean separation before push"] = self.avg_centroid()
-
-		first_contact = self.step(start_pt, end_pt, img_path)
-
-		# if first_contact == -1:
-		# 	return
-
-		for i in range(len(self.objs)):
-			summary[str(i)+" change of pos"] = euclidean_dist(self.objs[i].body.position, self.objs[i].original_pos)
-		summary["mean separation after push"] = self.avg_centroid()
-		summary["first contact object"] = first_contact
 		if sum_path is not None:
 			with open(sum_path+'summary.json', 'w') as f:
 				json.dump(summary, f)
@@ -844,7 +902,7 @@ class SingulationEnv:
 		# print(best_sep)
 		return best_sum
 
-	def collect_data_area_summary(self, start_pt, end_pt, gripper_width, img_path, sum_path):
+	def collect_data_area_summary(self, start_pt, end_pt, gripper_width, img_path=None, sum_path=None):
 		summary = {}
 		abs_start_pt = np.array(start_pt)
 		abs_end_pt = np.array(end_pt)
@@ -855,10 +913,21 @@ class SingulationEnv:
 		for i in range(len(self.objs)):
 			summary[str(i)+" dist to pushing line"] = pointToLineDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" original pos"] = np.array(self.objs[i].body.position).tolist()
+			# print(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" project dist"] = projectedPtToStartDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" vertices"] = np.array(self.objs[i].vertices).tolist()
+			summary[str(i)+" disk coverage"] = self.objs[i].disk_coverage
 
-		summary["mean separation before push"] = self.avg_centroid()
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" before push"] = self.objs[i].dist(self.objs[j])
+
+		summary["avg centroid before push"] = self.avg_centroid()
+		summary["avg geometry before push"] = self.avg_geometry()
+		summary["min centroid before push"] = self.min_centroid()
+		summary["min geometry before push"] = self.min_geometry()
+		summary["count threshold before push"] = self.count_threshold()
+
 
 		first_contact = self.step_area(start_pt, end_pt, gripper_width, img_path)
 
@@ -867,15 +936,24 @@ class SingulationEnv:
 
 		for i in range(len(self.objs)):
 			summary[str(i)+" change of pos"] = euclidean_dist(self.objs[i].body.position, self.objs[i].original_pos)
-		summary["mean separation after push"] = self.avg_centroid()
+		summary["avg centroid after push"] = self.avg_centroid()
+		summary["avg geometry after push"] = self.avg_geometry()
+		summary["min centroid after push"] = self.min_centroid()
+		summary["min geometry after push"] = self.min_geometry()
+		summary["count threshold after push"] = self.count_threshold()
 		summary["first contact object"] = first_contact
+
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" after push"] = self.objs[i].dist(self.objs[j])
 		
-		with open(sum_path+'summary.json', 'w') as f:
-			json.dump(summary, f)
+		if sum_path is not None:
+			with open(sum_path+'summary.json', 'w') as f:
+				json.dump(summary, f)
 		
 		return summary
 
-	def collect_data_two_points_summary(self, start_pt, end_pt, gripper_length, img_path, sum_path):
+	def collect_data_two_points_summary(self, start_pt, end_pt, gripper_length, img_path=None, sum_path=None):
 		summary = {}
 		abs_start_pt = np.array(start_pt)
 		abs_end_pt = np.array(end_pt)
@@ -886,10 +964,21 @@ class SingulationEnv:
 		for i in range(len(self.objs)):
 			summary[str(i)+" dist to pushing line"] = pointToLineDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" original pos"] = np.array(self.objs[i].body.position).tolist()
+			# print(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" project dist"] = projectedPtToStartDistance(abs_start_pt, abs_end_pt, self.objs[i].body.position)
 			summary[str(i)+" vertices"] = np.array(self.objs[i].vertices).tolist()
+			summary[str(i)+" disk coverage"] = self.objs[i].disk_coverage
 
-		summary["mean separation before push"] = self.avg_centroid()
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" before push"] = self.objs[i].dist(self.objs[j])
+
+		summary["avg centroid before push"] = self.avg_centroid()
+		summary["avg geometry before push"] = self.avg_geometry()
+		summary["min centroid before push"] = self.min_centroid()
+		summary["min geometry before push"] = self.min_geometry()
+		summary["count threshold before push"] = self.count_threshold()
+
 
 		first_contact = self.step_two_points(start_pt, end_pt, gripper_length, img_path)
 
@@ -898,11 +987,20 @@ class SingulationEnv:
 
 		for i in range(len(self.objs)):
 			summary[str(i)+" change of pos"] = euclidean_dist(self.objs[i].body.position, self.objs[i].original_pos)
-		summary["mean separation after push"] = self.avg_centroid()
+		summary["avg centroid after push"] = self.avg_centroid()
+		summary["avg geometry after push"] = self.avg_geometry()
+		summary["min centroid after push"] = self.min_centroid()
+		summary["min geometry after push"] = self.min_geometry()
+		summary["count threshold after push"] = self.count_threshold()
 		summary["first contact object"] = first_contact
+
+		for i in range(len(self.objs)):
+			for j in range(i, len(self.objs)):
+				summary[str(i)+" to "+str(j)+" after push"] = self.objs[i].dist(self.objs[j])
 		
-		with open(sum_path+'summary.json', 'w') as f:
-			json.dump(summary, f)
+		if sum_path is not None:
+			with open(sum_path+'summary.json', 'w') as f:
+				json.dump(summary, f)
 		
 		return summary
 
@@ -972,10 +1070,10 @@ class SingulationEnv:
 			self.objs[i].body.angle = position[i][2]
 
 	def load_env(self, dic):
-		# assert (len(dic) - 13) % 6 == 0
-		# num_obj = (len(dic) - 13) // 6
-		assert (len(dic) - 5) % 6 == 0
-		num_obj = (len(dic) - 5) // 6
+		assert (len(dic) - 14) % 6 == 0
+		num_obj = (len(dic) - 14) // 6
+		# assert (len(dic) - 5) % 6 == 0
+		# num_obj = (len(dic) - 5) // 6
 		for i in range(num_obj):
 			original_pos = np.array(dic[str(i)+" original pos"])# + np.array([-1, 3])
 			vertices = np.array(dic[str(i)+" vertices"])
@@ -1014,18 +1112,56 @@ class SingulationEnv:
 		return data_sum
 
 if __name__ == "__main__":
-	for num_obj in range(8, 9):
-		if not os.path.exists("original_dist/"+str(num_obj)):
-			os.makedirs("original_dist/"+str(num_obj))
+	# path = "/nfs/diskstation/zdong/cluster_push_final/"
+	path = "testing/"
+	for num_obj in range(3, 4):
+		if not os.path.exists(path+str(num_obj)):
+			os.makedirs(path+str(num_obj))
 
-		for g in range(1,2):
+		for g in range(3, 4):
 			print(num_obj, g)
-			
-			if not os.path.exists("original_dist/"+str(num_obj)+"/"+str(g)+"/ac"):
-				os.makedirs("original_dist/"+str(num_obj)+"/"+str(g)+"/ac")
-				os.makedirs("original_dist/"+str(num_obj)+"/"+str(g)+"/ct")
 
-			for i in range(0, 100):
+			for i in range(0, 1):
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/avg_centroid"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/avg_centroid")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/count_threshold"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/count_threshold")
+
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/quasi_random"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/quasi_random")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/quasi_random_area"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/quasi_random_area")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/quasi_random_two"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/quasi_random_two")
+
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/center_object_removal"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/center_object_removal")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/center_object_removal_area"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/center_object_removal_area")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/center_object_removal_two"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/center_object_removal_two")
+
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_contact_range"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_contact_range")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_contact_range_area"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_contact_range_area")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_contact_range_two"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_contact_range_two")
+
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation_area"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation_area")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation_two"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/two_cluster_separation_two")
+
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_overlap"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_overlap")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_overlap_area"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_overlap_area")
+				if not os.path.exists(path+str(num_obj)+"/"+str(g)+"/min_overlap_two"):
+					os.makedirs(path+str(num_obj)+"/"+str(g)+"/min_overlap_two")
+
 				print(i)
 				test = SingulationEnv()
 				while True:
@@ -1034,6 +1170,21 @@ if __name__ == "__main__":
 						break
 					except:
 						print("retry")
+				test.reset()
+				summary = test.prune_best(no_prune, metric="avg centroid", sum_path=path+str(num_obj)+"/"+str(g)+"/avg_centroid/"+str(i))
+				test.reset()
+				summary = test.prune_best(no_prune, metric="count threshold", sum_path=path+str(num_obj)+"/"+str(g)+"/count_threshold/"+str(i))
 
-				summary = test.prune_best(no_prune, metric="avg centroid", sum_path="original_dist/"+str(num_obj)+"/"+str(g)+"/ac/"+str(i))
-				summary = test.prune_best(no_prune, metric="count threshold", sum_path="original_dist/"+str(num_obj)+"/"+str(g)+"/ct/"+str(i))
+				# quasi random
+				test.reset()
+				push_pts = quasi_random(test)
+				test.collect_data_summary(push_pts[0], push_pts[1], sum_path=path+str(num_obj)+"/"+str(g)+"/quasi_random/"+str(i))
+
+				test.reset()
+				test.collect_data_area_summary(push_pts[0], push_pts[1], 0.3, sum_path=path+str(num_obj)+"/"+str(g)+"/quasi_random_area/"+str(i))
+
+				test.reset()
+				test.collect_data_two_points_summary(push_pts[0], push_pts[1], 0.6, sum_path=path+str(num_obj)+"/"+str(g)+"/quasi_random_two/"+str(i))
+
+
+
